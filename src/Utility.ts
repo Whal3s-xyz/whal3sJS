@@ -122,8 +122,9 @@ export default class Utility {
             await this.init();
         }
 
-        console.log(this.config.parameters)
-        const txBuilder = await (this.nftContract?.methods[this.config.method](this.config.parameters));
+
+        const formattedParams = this.mapParamsToContractMethod(this.config.parameters, this.config.method)
+        const txBuilder = await (this.nftContract?.methods[this.config.method](...formattedParams));
         const gasAmount = await txBuilder.estimateGas({from: this.selectedAccount});
         const gasPrice = await this.web3?.eth.getGasPrice();
 
@@ -253,6 +254,29 @@ export default class Utility {
         this.selectedAccount = account
         console.log(`Selected account changed to ${this.selectedAccount}`);
         this.validateWalletAddress(account).then((response) => this.selectedAccountIsValid = response.valid)
+    }
+    getContractMethodParams(method: string) {
+        if (!this.nftContract)
+            return null;
+
+        console.log(this.nftContract.options)
+        console.log(this.nftContract.options.jsonInterface)
+        const params = this.nftContract.options.jsonInterface.filter((item: any) => item.name === method && item.type === 'function')
+        console.log(params)
+        return params[0]
+    }
+
+    mapParamsToContractMethod(params: any, method:string){
+        const that = this
+        const methodParams = this.getContractMethodParams(method)?.inputs;
+        console.log({methodParams: methodParams})
+        const formattedParams = params.map(function (param: any, index: number) {
+            if (methodParams[index]?.type === 'uint256')
+                return that.web3?.utils.toBN(param)
+            return param
+        })
+        console.log({formattedParams: formattedParams})
+        return formattedParams
     }
 }
 
