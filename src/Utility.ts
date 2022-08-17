@@ -23,18 +23,20 @@ export default class Utility {
     events: EventArray
     selectedAccountIsValid = false
     private id: string;
+    apiUrl: string
+    private debug: boolean
 
-    constructor(id: string, apiToken: string = '') {
+    constructor(id: string, apiToken: string = '', apiUrl: string = API_URL, debug: boolean = false) {
         this.id = id
         this.apiToken = apiToken
+        this.apiUrl = apiUrl
+        this.debug = debug
         this.events = {};
     }
 
     async init() {
-        console.log('init')
         try {
-            const config = await this.fetchConfig()
-            this.config = config[Object.keys(config)[0]]
+            this.config = await this.fetchConfig()
             this.dispatch('initialized')
         } catch (error) {
             if (typeof error === "string") {
@@ -117,46 +119,87 @@ export default class Utility {
     }
 
     async performAction() {
-        console.log('performAction')
+        if (this.debug) console.log('performAction')
+
         if (!this.isInitialized) {
             await this.init();
         }
 
-
-        const formattedParams = this.mapParamsToContractMethod(this.config.parameters, this.config.method)
-        const txBuilder = await (this.nftContract?.methods[this.config.method](...formattedParams));
-        const gasAmount = await txBuilder.estimateGas({from: this.selectedAccount});
-        const gasPrice = await this.web3?.eth.getGasPrice();
-
-        const that = this
-        txBuilder.send({
-            from: this.selectedAccount,
-            gasPrice: gasPrice, // customizable by user during MetaMask confirmation.
-            gas: Number((gasAmount * 1.10).toFixed(0)), // customi
-        })
-            .once('sending', function (payload: any) {
+        if (this.config.type === 'TRANSACTION') {
+            const that = this
+            this.web3?.eth?.sendTransaction({
+                from: this.selectedAccount,
+                to: this.config.toAddress,
+                value: this.config.value,
+                common: {
+                    customChain: {
+                        networkId: this.config.chainId,
+                        chainId: this.config.chainId,
+                    }
+                }
+            }).once('sending', function (payload: any) {
                 that.dispatch('sending', payload)
             })
-            .once('sent', function (payload: any) {
-                that.dispatch('sent', payload)
+                .once('sent', function (payload: any) {
+                    that.dispatch('sent', payload)
+                })
+                .once('transactionHash', function (hash: string) {
+                    that.createTransactionEngagement(hash)
+                    if (that.debug) console.log('got transaction hash')
+                    that.dispatch('transactionHash', hash)
+                })
+                .once('receipt', function (receipt: any) {
+                    that.dispatch('receipt', receipt)
+                })
+                .on('confirmation', function (confNumber: any, receipt: any) {
+                    that.dispatch('confirmation', {confNumber, receipt})
+                })
+                .on('error', function (error: any) {
+                    that.dispatch('error', error)
+                })
+                .then(function (receipt: any) {
+                    that.dispatch('done', receipt)
+                });
+
+        } else if (this.config.type === 'SMART_CONTRACT_INTERACTION') {
+
+            const formattedParams = this.mapParamsToContractMethod(this.config.parameters, this.config.method)
+            const txBuilder = await (this.nftContract?.methods[this.config.method](...formattedParams));
+            const gasAmount = await txBuilder.estimateGas({from: this.selectedAccount});
+            const gasPrice = await this.web3?.eth.getGasPrice();
+
+            const that = this
+            txBuilder.send({
+                from: this.selectedAccount,
+                gasPrice: gasPrice, // customizable by user during MetaMask confirmation.
+                gas: Number((gasAmount * 1.10).toFixed(0)), // customi
             })
-            .once('transactionHash', function (hash: string) {
-                that.createTransactionEngagement(hash)
-                console.log('got transaction hash')
-                that.dispatch('transactionHash', hash)
-            })
-            .once('receipt', function (receipt: any) {
-                that.dispatch('receipt', receipt)
-            })
-            .on('confirmation', function (confNumber: any, receipt: any, latestBlockHash: string) {
-                that.dispatch('confirmation', {confNumber, receipt, latestBlockHash})
-            })
-            .on('error', function (error: any) {
-                that.dispatch('error', error)
-            })
-            .then(function (receipt: any) {
-                that.dispatch('done', receipt)
-            });
+                .once('sending', function (payload: any) {
+                    that.dispatch('sending', payload)
+                })
+                .once('sent', function (payload: any) {
+                    that.dispatch('sent', payload)
+                })
+                .once('transactionHash', function (hash: string) {
+                    that.createTransactionEngagement(hash)
+                    if (that.debug) console.log('got transaction hash')
+                    that.dispatch('transactionHash', hash)
+                })
+                .once('receipt', function (receipt: any) {
+                    that.dispatch('receipt', receipt)
+                })
+                .on('confirmation', function (confNumber: any, receipt: any, latestBlockHash: string) {
+                    that.dispatch('confirmation', {confNumber, receipt, latestBlockHash})
+                })
+                .on('error', function (error: any) {
+                    that.dispatch('error', error)
+                })
+                .then(function (receipt: any) {
+                    that.dispatch('done', receipt)
+                });
+        } else {
+            this.dispatch('invalidAction')
+        }
 
 
     }
@@ -214,19 +257,22 @@ export default class Utility {
     }
 
     async fetchConfig() {
-        const configReponse = await fetch(`${API_URL}utility/${this.id}/config`)
+        const apiUrl = this.apiUrl;
+        const configReponse = await fetch(`${apiUrl}utility/${this.id}/config`)
         const config = await configReponse.json();
         return config;
     }
 
     async fetchEngagements() {
-        const engagementReponse = await fetch(`${API_URL}utility/${this.id}/engagements`)
+        const apiUrl = this.apiUrl;
+        const engagementReponse = await fetch(`${apiUrl}utility/${this.id}/engagements`)
         const engagements = await engagementReponse.json();
         return engagements;
     }
 
     async validateWalletAddress(walletAddress = this.selectedAccount) {
-        const validateReponse = await fetch(`${API_URL}utility/${this.id}/validate/wallet?wallet_address=${walletAddress}`)
+        const apiUrl = this.apiUrl;
+        const validateReponse = await fetch(`${apiUrl}utility/${this.id}/validate/wallet?wallet_address=${walletAddress}`)
         const validate = await validateReponse.json();
         return validate;
 
@@ -234,7 +280,8 @@ export default class Utility {
 
     createTransactionEngagement(transactionHash: string) {
         let xhr = new XMLHttpRequest();
-        xhr.open("POST", `${API_URL}utility/${this.id}/engagements`);
+        const apiUrl = this.apiUrl;
+        xhr.open("POST", `${apiUrl}utility/${this.id}/engagements`);
 
         xhr.setRequestHeader("Accept", "application/json");
         xhr.setRequestHeader("Content-Type", "application/json");
@@ -246,36 +293,37 @@ export default class Utility {
             "transaction_hash": transactionHash
         }
 
-        console.log(JSON.stringify(data))
+        if (this.debug) console.log(JSON.stringify(data))
         xhr.send(JSON.stringify(data));
     }
 
     setSelectedAccount(account: string) {
         this.selectedAccount = account
-        console.log(`Selected account changed to ${this.selectedAccount}`);
+        if (this.debug) console.log(`Selected account changed to ${this.selectedAccount}`);
         this.validateWalletAddress(account).then((response) => this.selectedAccountIsValid = response.valid)
     }
+
     getContractMethodParams(method: string) {
         if (!this.nftContract)
             return null;
 
-        console.log(this.nftContract.options)
-        console.log(this.nftContract.options.jsonInterface)
+        if (this.debug) console.log(this.nftContract.options)
+        if (this.debug) console.log(this.nftContract.options.jsonInterface)
         const params = this.nftContract.options.jsonInterface.filter((item: any) => item.name === method && item.type === 'function')
-        console.log(params)
+        if (this.debug) console.log(params)
         return params[0]
     }
 
-    mapParamsToContractMethod(params: any, method:string){
+    mapParamsToContractMethod(params: any, method: string) {
         const that = this
         const methodParams = this.getContractMethodParams(method)?.inputs;
-        console.log({methodParams: methodParams})
+        if (this.debug) console.log({methodParams: methodParams})
         const formattedParams = params.map(function (param: any, index: number) {
             if (methodParams[index]?.type === 'uint256')
                 return that.web3?.utils.toBN(param)
             return param
         })
-        console.log({formattedParams: formattedParams})
+        if (this.debug) console.log({formattedParams: formattedParams})
         return formattedParams
     }
 }
