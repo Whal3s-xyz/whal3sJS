@@ -24,6 +24,9 @@ export default class Utility {
     private id: string;
     apiUrl: string;
     private debug: boolean;
+    engagementsCount: number = 0
+    maxEngagements: number | null = null
+    maxEngagementsPerWallet: number | null = null
 
     constructor(
         id: string,
@@ -40,6 +43,10 @@ export default class Utility {
 
     async init() {
         try {
+            const info = await this.fetchInfo();
+            this.engagementsCount = info.engagements
+            this.maxEngagements = info.maxEngagements
+            this.maxEngagementsPerWallet = info.maxEngagementsPerWallet
             this.config = await this.fetchConfig();
             this.dispatch('initialized');
         } catch (error) {
@@ -109,7 +116,7 @@ export default class Utility {
 
         if (this.config.type === 'SMART_CONTRACT_INTERACTION') {
             this.nftContract = new this.web3.eth.Contract(
-                JSON.parse(this.config.abi),
+                this.config.abi,
                 this.config.contractAddress
             );
         }
@@ -168,19 +175,53 @@ export default class Utility {
                 })
                 .then(function (receipt: any) {
                     that.dispatch('done', receipt);
-                });
+                }).catch((error) => {
+                if (this.debug)
+                    console.log(error)
+                if (error.code === 3)
+                    that.dispatch('notEnoughFunds', error);
+            });
         } else if (this.config.type === 'SMART_CONTRACT_INTERACTION') {
             const formattedParams = this.mapParamsToContractMethod(
                 this.config.parameters,
                 this.config.method
             );
-            const txBuilder = await this.nftContract?.methods[this.config.method](
-                ...formattedParams
-            );
-            const gasAmount = await txBuilder.estimateGas({
-                from: this.selectedAccount,
-            });
-            const gasPrice = await this.web3?.eth.getGasPrice();
+
+            if (this.debug) console.log('builing transaction')
+            let txBuilder;
+            try{
+                txBuilder = await this.nftContract?.methods[this.config.method](
+                    ...formattedParams
+                );
+            } catch (error) {
+                if (this.debug) console.log(error)
+                this.dispatch('transactionBuildingError', error)
+                return;
+            }
+
+            if (this.debug) console.log('estimate gas amount')
+            let gasAmount;
+            try{
+                gasAmount = await txBuilder.estimateGas({
+                    from: this.selectedAccount,
+                    gas: 9950000
+                })
+            } catch (error) {
+                if (this.debug) console.log(error)
+                this.dispatch('estimateGasError', error)
+                return;
+            }
+
+
+            if (this.debug) console.log('estimate gas price')
+            let gasPrice;
+            try{
+                gasPrice = await this.web3?.eth.getGasPrice();
+            } catch (error) {
+                if (this.debug) console.log(error)
+                this.dispatch('gasPriceError', error)
+                return;
+            }
 
             const that = this;
             txBuilder
@@ -213,12 +254,23 @@ export default class Utility {
                         });
                     }
                 )
-                .on('error', function (error: any) {
+                .on('error', function (error: Error) {
                     that.dispatch('error', error);
                 })
                 .then(function (receipt: any) {
                     that.dispatch('done', receipt);
+                })
+                .catch((error: unknown) => {
+                    if(this.debug)console.log(error)
+                    if (typeof error === 'string') {
+                        this.dispatch('walletError', error);
+                    } else if (error instanceof Error) {
+                        this.dispatch('walletError', error.message);
+                    }
+
                 });
+
+
         } else {
             this.dispatch('invalidAction');
         }
@@ -295,6 +347,13 @@ export default class Utility {
         return true;
     }
 
+    async fetchInfo() {
+        const apiUrl = this.apiUrl;
+        const infoReponse = await fetch(`${apiUrl}utility/${this.id}`);
+        const info = await infoReponse.json();
+        return info;
+    }
+
     async fetchConfig() {
         const apiUrl = this.apiUrl;
         const configReponse = await fetch(`${apiUrl}utility/${this.id}/config`);
@@ -366,12 +425,7 @@ export default class Utility {
         return params[0];
     }
 
-    mapParamsToContractMethod(params
-                                  :
-                                  any, method
-                                  :
-                                  string
-    ) {
+    mapParamsToContractMethod(params: any, method: string) {
         const that = this;
         const methodParams = this.getContractMethodParams(method)?.inputs;
         if (this.debug) console.log({methodParams: methodParams});
@@ -383,4 +437,5 @@ export default class Utility {
         if (this.debug) console.log({formattedParams: formattedParams});
         return formattedParams;
     }
+
 }
